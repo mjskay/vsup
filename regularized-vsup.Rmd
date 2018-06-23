@@ -265,7 +265,7 @@ distorted_small = polls %$%
   ggtitle("Shrinkage, small SE")
 
 distorted_large = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 25) %>%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
   draw_scale_distorted() +
   ggtitle("Shrinkage, large SE")
 
@@ -275,11 +275,98 @@ distorted_small | distorted_large
 
 This would probably be improved more if the rectangles were polygons so that the boundaries between leads lined up across rows, but I think the idea gets across.
 
+
 ## Thoughts
 
 I think that some variant of regularization could offer a way to justify color choice in something like a VSUP: it can answer the question, _how much_ color value supressing should the palette do? It also has some nice properties, like avoiding order reversals that happen in tree-based VSUPs.
 
 On the other hand, it does not immediately seem to have the property of allowing fewer colors to be used, which is a nice property of tree-based VSUPs. Maybe there is a way to do that? Perhaps one could come up with a way of merging categories at lower levels based on perceptual distance of the colors or something. However, I think this would be very dataset-dependent: the polling data above does not actually warrant much shrinkage or value suppressing, in my opinion, so drastic value suppressing or merging of categories seems like an overcorrection---unless you had a very strong prior saying that polling numbers should be close to 50-50.
+
+## Addendum: making the boundaries line up
+
+```{r, fig.width = 6, fig.height = 3}
+build_scale_polygon = function(min_lead, max_lead, min_se, max_se, prior_var_ = prior_var, se_breaks = 4, lead_breaks = 4) {
+  crossing(
+    lead = seq(min_lead, max_lead, length.out = lead_breaks + 1),
+    se = seq(min_se, max_se, length.out = se_breaks + 1)
+  ) %>%
+  group_by(lead) %>%
+  mutate(
+    se_bottom = se,
+    se_top = lag(se_bottom),
+    se_mid = (se_top + se_bottom)/2
+  ) %>%
+  group_by(se) %>%
+  mutate(
+    lead_right = lead,
+    lead_left = lag(lead_right), 
+    lead_mid = (lead_right + lead_left)/2,
+    lead_right_adj = lead_right / (1 + se_mid^2 / prior_var_),
+    lead_left_adj = lag(lead_right_adj),
+    lead_mid_adj = lead_mid / (1 + se_mid^2 / prior_var_)
+  ) %>%
+  group_by(lead) %>%
+  mutate(
+    lead_left_top_adj = lag(lead_left_adj) %>% ifelse(is.na(.), lead_left, .),
+    lead_right_top_adj = lag(lead_right_adj) %>% ifelse(is.na(.), lead_right, .)
+  ) %>%
+  drop_na() %>%
+  group_by(lead_mid_adj, se_mid) %>%
+  do(with(., data_frame(
+    lead = c(lead_left_top_adj, lead_left_adj, lead_right_adj, lead_right_top_adj),
+    se = c(se_top, se_bottom, se_bottom, se_top)
+  )))
+}
+
+draw_scale_polygon = function(scale_data){
+  scale_data %>%
+    ggplot(aes(
+      x = lead, y = se, fill = lead_mid_adj, 
+      group = paste(lead_mid_adj,se_mid), alpha = -se_mid
+    )) +
+    geom_polygon() +
+    scale_y_reverse() +
+    scale_fill_gradient(
+      low = rgb(166, 28, 58, max = 255), high = rgb(57, 93, 159, max = 255),
+      guide = FALSE
+    ) +
+    scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
+    scale_x_continuous(position = "top") +
+    theme(panel.grid = element_blank()) +
+    ylab("se") +
+    xlab("lead")
+}
+
+polygon_small = polls %$%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se)) %>%
+  draw_scale_polygon() +
+  ggtitle("Shrinkage, small SE")
+
+polygon_large = polls %$%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  draw_scale_polygon() +
+  ggtitle("Shrinkage, large SE")
+
+polygon_small | polygon_large
+```
+
+Or with more breaks:
+
+```{r, fig.width = 6, fig.height = 3}
+polygon_small = polls %$%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se), lead_breaks = 5, se_breaks = 5) %>%
+  draw_scale_polygon() +
+  ggtitle("Shrinkage, small SE")
+
+polygon_large = polls %$%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30, lead_breaks = 5, se_breaks = 5) %>%
+  draw_scale_polygon() +
+  ggtitle("Shrinkage, large SE")
+
+polygon_small | polygon_large
+```
+
+I think this starts to have a more VSUP-y flavor. For example, the cells in bottom row or two in the large-SE case start to blur together --- so you can get a merging of colors, though it is as a consequence of shrinkage + the colors being so close perceptually, not explicitly setting the colors to be the same.
 
 ## Appendix: verifying the math
 
