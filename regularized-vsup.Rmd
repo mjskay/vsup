@@ -368,6 +368,41 @@ polygon_small | polygon_large
 
 I think this starts to have a more VSUP-y flavor. For example, the cells in bottom row or two in the large-SE case start to blur together --- so you can get a merging of colors, though it is as a consequence of shrinkage + the colors being so close perceptually, not explicitly setting the colors to be the same.
 
+## Addendum 2: polar coordinates (VSUP-style)
+
+Turns out generating an approximation of the VSUP style just involves taking the square (non-distorted) version and then translating it into polar coordinates. Like so (the `|` and `&` operators here are from the `patchwork` package --- `|` lays out the plots beside each other and `&` applies ggplot functions to each subchart (like `+` does for a single chart in ggplot)):
+
+```{r fig.width = 12, fig.height = 6}
+(no_shrink_large | shrink_large) &
+  coord_polar(start = pi) &
+  # The constant 5 in the next line is how many times you would have to repeat the
+  # chart to make a circle. Increase to make the chart narrower, decrease to make wider.
+  {max(abs(polls$lead)*5) %>% xlim(-., .)} 
+```
+
+On the one hand, the shrinkage one is kind of nice because the shape reflects how much shrinkage there is. On the other hand, the polar coordinates version is kind of elegant, and may possibly be easier to annotate and explain.
+
+Maybe a compromise would be to set the starting radius to something other than 0 and the angular extent of the plot so that the slope of the outer edges and the width of the most uncertain row is approximately the same as in the shrinkage chart. I'm sure you could figure out how to determine those values automatically, but I'm eye-balled it here for the large SE case:
+
+```{r fig.width = 8, fig.height = 8}
+shrink_large +
+  coord_polar(start = pi) +
+  #increase constant 8 to make chart narrower
+  {max(abs(polls$lead)*8) %>% xlim(-., .)} +
+  #increase constant 45 to increase radius on bottom row
+  scale_y_reverse(limits = c(45, NA))
+```
+
+(compare the above chart to this one:)
+
+```{r fig.width = 3, fig.height = 3}
+polls %$%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  draw_scale_polygon() +
+  ggtitle("Shrinkage, large SE")
+```
+
+
 ## Appendix: verifying the math
 
 Just to make sure I didn't screw up some aspect of the math in the analytical version of the model above, here is basically the same model fit using MCMC:
