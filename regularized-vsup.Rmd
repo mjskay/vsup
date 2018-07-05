@@ -12,7 +12,7 @@ _Matthew Kay <mjskay@umich.edu>_
 
 ## Introduction
 
-I was reading through the VSUP paper and it occurred to me that there is a connection between this and the idea of shrinkage in hierarchical models --- specifically, for groups with higher uncertainty in hierarchical models, estimates will be pulled more towards the mean, making them more conservative (or, say, information from more certain groups is borrowed to improve estimates in groups that are less certain). Another way of viewing this is as a form of regularization.
+I was reading through the [VSUP paper](https://idl.cs.washington.edu/files/2018-UncertaintyPalettes-CHI.pdf) and it occurred to me that there is a connection between this and the idea of shrinkage in hierarchical models --- specifically, for groups with higher uncertainty in hierarchical models, estimates will be pulled more towards the mean, making them more conservative (or, say, information from more certain groups is borrowed to improve estimates in groups that are less certain). Another way of viewing this is as a form of regularization.
 
 At first I thought that that is what VSUPs would do, but then I realized they do so inconsistently --- sometimes they pull values towards the mean, and sometimes they actually pull values away from the mean. I tried to illustrate:
 
