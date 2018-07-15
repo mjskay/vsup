@@ -39,6 +39,7 @@ library(tidybayes)
 library(ggstance)
 library(modelr)
 library(patchwork)
+library(LaplacesDemon)
 
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
@@ -157,7 +158,11 @@ polls %>%
 Okay, let's try to define some small number of cells based on this to make a color scale...
 
 ```{r}
-build_scale = function(min_lead, max_lead, min_se, max_se, prior_var_ = prior_var) {
+shrinkage_adjustment = function(lead, se, prior_var) {
+  lead / (1 + se^2 / prior_var)
+}
+
+build_scale = function(min_lead, max_lead, min_se, max_se, adjust, ...) {
   crossing(
     lead = seq(min_lead, max_lead, length.out = 5),
     se = seq(min_se, max_se, length.out = 5)
@@ -171,15 +176,15 @@ build_scale = function(min_lead, max_lead, min_se, max_se, prior_var_ = prior_va
   mutate(
     prev_lead = lag(lead), 
     lead_mid = (lead + prev_lead)/2,
-    lead_adj = lead / (1 + se_mid^2 / prior_var_),
+    lead_adj = adjust(lead, se_mid, ...),
     prev_lead_adj = lag(lead_adj),
-    lead_mid_adj = lead_mid / (1 + se_mid^2 / prior_var_)
+    lead_mid_adj = adjust(lead_mid, se_mid, ...)
   ) %>%
   drop_na()
 }
 
 scale_data = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se))
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se), shrinkage_adjustment, prior_var = prior_var)
 ```
 
 Then compare the two versions. First, we'll color each cell by the value of `lead` at its midpoint (left plot) then by the adjusted (shrunken / regularized) value at its midpoint (right plot):
@@ -195,9 +200,11 @@ draw_scale = function(scale_data, color_by = "lead_mid") {
     geom_rect() +
     scale_y_reverse() +
     scale_fill_gradient(
+      # limits = max(abs(scale_data$lead)) %>% c(-., .),
       low = rgb(166, 28, 58, max = 255), high = rgb(57, 93, 159, max = 255),
       guide = FALSE
     ) +
+    scale_x_continuous(position = "top", limits = c(-40, 40)) +
     scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
     theme(panel.grid = element_blank()) +
     ylab("se") +
@@ -223,12 +230,12 @@ To see what happens if there are data points with a lot of shrinkage, let's let 
 
 ```{r fig.width = 6, fig.height = 3}
 no_shrink_large = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale(color_by = "lead_mid") +
   ggtitle("No shrinkage, large max SE")
 
 shrink_large = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale(color_by = "lead_mid_adj") +
   ggtitle("Shrinkage, large max SE")
 
@@ -251,6 +258,7 @@ draw_scale_distorted = function(scale_data) {
     geom_rect() +
     scale_y_reverse() +
     scale_fill_gradient(
+      # limits = max(abs(scale_data$lead)) %>% c(-., .),
       low = rgb(166, 28, 58, max = 255), high = rgb(57, 93, 159, max = 255),
       guide = FALSE
     ) +
@@ -262,12 +270,12 @@ draw_scale_distorted = function(scale_data) {
 }
 
 distorted_small = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se)) %>%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se), shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale_distorted() +
   ggtitle("Shrinkage, small SE")
 
 distorted_large = polls %$%
-  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale_distorted() +
   ggtitle("Shrinkage, large SE")
 
@@ -287,7 +295,9 @@ On the other hand, it does not immediately seem to have the property of allowing
 ## Addendum: making the boundaries line up
 
 ```{r, fig.width = 6, fig.height = 3}
-build_scale_polygon = function(min_lead, max_lead, min_se, max_se, prior_var_ = prior_var, se_breaks = 4, lead_breaks = 4) {
+build_scale_polygon = function(min_lead, max_lead, min_se, max_se, 
+  adjust, ..., se_breaks = 4, lead_breaks = 4
+) {
   crossing(
     lead = seq(min_lead, max_lead, length.out = lead_breaks + 1),
     se = seq(min_se, max_se, length.out = se_breaks + 1)
@@ -303,9 +313,9 @@ build_scale_polygon = function(min_lead, max_lead, min_se, max_se, prior_var_ = 
     lead_right = lead,
     lead_left = lag(lead_right), 
     lead_mid = (lead_right + lead_left)/2,
-    lead_right_adj = lead_right / (1 + se_mid^2 / prior_var_),
+    lead_right_adj = adjust(lead_right, se_mid, ...),
     lead_left_adj = lag(lead_right_adj),
-    lead_mid_adj = lead_mid / (1 + se_mid^2 / prior_var_)
+    lead_mid_adj = adjust(lead_mid, se_mid, ...)
   ) %>%
   group_by(lead) %>%
   mutate(
@@ -340,12 +350,12 @@ draw_scale_polygon = function(scale_data){
 }
 
 polygon_small = polls %$%
-  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se)) %>%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se), shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale_polygon() +
   ggtitle("Shrinkage, small SE")
 
 polygon_large = polls %$%
-  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale_polygon() +
   ggtitle("Shrinkage, large SE")
 
@@ -356,12 +366,14 @@ Or with more breaks:
 
 ```{r, fig.width = 6, fig.height = 3}
 polygon_small = polls %$%
-  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se), lead_breaks = 5, se_breaks = 5) %>%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), max(se), shrinkage_adjustment, prior_var = prior_var,
+    lead_breaks = 5, se_breaks = 5) %>%
   draw_scale_polygon() +
   ggtitle("Shrinkage, small SE")
 
 polygon_large = polls %$%
-  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30, lead_breaks = 5, se_breaks = 5) %>%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var,
+    lead_breaks = 5, se_breaks = 5) %>%
   draw_scale_polygon() +
   ggtitle("Shrinkage, large SE")
 
@@ -399,10 +411,200 @@ shrink_large +
 
 ```{r fig.width = 3, fig.height = 3}
 polls %$%
-  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30) %>%
+  build_scale_polygon(-max(abs(lead)), max(abs(lead)), min(se), 30, shrinkage_adjustment, prior_var = prior_var) %>%
   draw_scale_polygon() +
   ggtitle("Shrinkage, large SE")
 ```
+
+## Addendum 3: linear in log-odds model
+
+### The linear in log-odds model
+
+Let's imagine instead that we want to do a sort of perceptual correction: we expect that people's perception of the probability that Clinton will lose^[I've used $P(Clinton loses}$ instead of $P(Clinton wins)$ because it avoids a bunch of $1 - p$ in the math] is biased according to [linear in log-odds](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3261445/) model, as many probabilities are.
+
+Say the relationship between the perceived `P(Clinton loses)` and the reported `P(Clinton loses)` is linear in log-odds space, with slope `a` and intercept `b`. In the linear in log-odds model the particular values of `a` and `b` are domain-dependent. For the sake of argument, we'll choose `a` and `b` such that _perceived probability_ == _actual probability_ when _actual probability_ == 0.5, and so that people's perceived probabilities are generally biased _away_ from 0.5 (this is what folks often argue in the polling case: if I say someone has a 30% chance of losing (or a 70% chance of winning), people will think the candidate is more likely to lose (win) than they actually are). Thus:
+
+$$
+\textrm{logit}(p_{perceived}) = a + b\cdot\textrm{logit}(p_{actual})
+$$
+
+```{r, fig.width = 6, fig.height = 5}
+a = 0
+b = 2
+
+data_frame(
+  p_actual = seq(.001, .999, length.out = 101),
+  p_perceived = invlogit(a + b*logit(p_actual))
+) %>%
+  ggplot(aes(x = p_actual, y = p_perceived)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_line(color = "red", size = 1) 
+```
+
+### Correction using the linear in log-odds model
+
+Thus, to correct for misperceptions in uncertainty in the probability of losing that result from how people perceive the uncertainty in an estimate of the margin of victory (the `lead`), we need to (1) translate the `lead` and `se` into a lose probability we want people to perceive (`p_perceived`); (2) translate that perceived lose probability into a displayed lose probability (`p_displayed`) that, if shown, people _would perceive_ as `p_perceived`; (3) determine the value of lead that corresponds to that actual lose probability.
+
+(1) To translate `lead` and `se` into a lose probability we want the audience to perceive (`p_perceived`), we'll use the CDF of the normal distribution:
+
+$$
+\begin{eqnarray}
+p_{perceived}& = &P(\textrm{Clinton loses})\\
+&=& P(lead < 0)\\
+&=& F_{Normal}(0|lead, se)\\ 
+\end{eqnarray}
+$$
+Where $F_{Normal}(x|\mu, \sigma)$ is the CDF of a normal distribution with mean $\mu$ and standard deviation $\sigma$. In R, this is the `pnorm` function:
+
+```{r}
+polls %<>% mutate(
+  p_perceived = pnorm(0, lead, se)
+)
+```
+
+(2) Now we'll translate $p_{perceived}$ into $p_{displayed}$ by inverting the linear in log-odds model:
+
+$$
+\begin{align}
+&& \textrm{logit}(p_{perceived}) &= a + b\cdot\textrm{logit}(p_{displayed})\\
+\implies && p_{displayed} &= \textrm{logit}^{-1}\Big(\frac{\textrm{logit}(p_{perceived}) - a}{b}\Big)
+\end{align}
+$$
+
+```{r}
+polls %<>% mutate(
+  p_displayed = invlogit((logit(p_perceived) - a) / b)
+)
+```
+
+(3) Finally, we'll calculate the lead necessary to acheive the lose probability we want to display, given the uncertainty in the estimate. We want $lead_{adj}$ such that:
+
+$$
+\begin{align}
+p_{displayed}& = F_{Normal}(0|lead_{adj}, se)
+\end{align}
+$$
+
+To determine $lead_{adj}$, we can use the fact that with the Normal distribution, $F_{Normal}(0|\mu, \sigma) = F_{Normal}(-mu|0, \sigma)$---that is, if we want to find the probability of getting a value less than 0 for a normally-distributed variable $X$ that is not centered on 0, this is the same as shifting the distribution to be centered on 0 and asking what the probability is of a value less than $-\mu$.
+
+$$
+\begin{align}
+&& p_{displayed}& = F_{Normal}(0|lead_{adj}, se) \\
+\implies && p_{displayed}& = F_{Normal}(-lead_{adj}|0, se) \\
+\implies && F_{Normal}^{-1}(p_{displayed}|0,se)& = -lead_{adj} \\
+\implies && lead_{adj}& = -F_{Normal}^{-1}(p_{displayed}|0,se)
+\end{align}
+$$
+
+$F_{Normal}^{-1}$ is the Normal inverse CDF, or the quantile function of the Normal distribution, which is the `qnorm` function:
+
+```{r}
+polls %<>% mutate(
+  lead_adj_llo = -qnorm(p_displayed, 0, se)
+)
+```
+
+### Results of the correction
+
+This correction yields a greater adjustment then the shrinkage approach (*N.B.* I completely made up the LLO slope parameter, `b`, which directly controls the size of the adjustment here):
+
+
+```{r}
+polls %>%
+  ggplot(aes(x = se, y = abs(lead_adj_llo - lead))) +
+  geom_point()
+```
+
+```{r, fig.width = 10, fig.height = 2}
+set.seed(123456)
+polls %>%
+  mutate(y = -runif(n())) %>%
+  ggplot(aes(y = y, yend = y, xend = lead, x = lead_adj_llo)) +
+  geom_segment(size = 0.75, color = "red") +
+  geom_point(size = 1.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text", x = 31, y = -.14, label = "adjustment", color = "red", 
+    hjust = 0, fontface = "bold"
+  ) +
+  scale_y_continuous(breaks = NULL) +
+  ylab(NULL)
+```
+
+
+### Palettes
+
+To draw the palettes, we'll define an adjustment function that implements the above steps:
+
+```{r}
+llo_adjustment = function(lead, se, factor = 1) {
+  # This function is a more numerically stable implementation of:
+  #   p_perceived = pnorm(0, lead, se)
+  #   p_displayed = invlogit((logit(p_perceived) - a) / b)
+  #   -qnorm(p_displayed, 0, se)
+  logit_p_perceived = pnorm(0, lead, se, log.p = TRUE) - pnorm(0, lead, se, log.p = TRUE, lower.tail = FALSE)
+  logit_p_displayed = (logit_p_perceived - a) / b
+  lead_adj = ifelse(logit_p_displayed > 0,
+    qnorm(invlogit(-logit_p_displayed), 0, se),
+    -qnorm(invlogit(logit_p_displayed), 0, se)
+  )
+  lead_adj * factor
+}
+```
+
+#### Square
+```{r, fig.width = 8.5, fig.height = 3}
+polls %<>% mutate(
+  lead_adj_llo = llo_adjustment(lead, se)
+)
+llo_factor = polls %$% {max(abs(lead)) / max(abs(lead_adj_llo))}
+
+scale_data_shrink = polls %$%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se), shrinkage_adjustment, prior_var = prior_var)
+
+scale_data_llo = polls %$%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), max(se), llo_adjustment, factor = llo_factor)
+
+no_shrink = scale_data_shrink %>%
+  draw_scale(color_by = "lead_mid") +
+  ggtitle("No shrinkage")
+
+shrink = scale_data_shrink %>%
+  draw_scale(color_by = "lead_mid_adj") +
+  ggtitle("Shrinkage")
+
+llo = scale_data_llo %>%
+  draw_scale(color_by = "lead_mid_adj") +
+  ggtitle("LLO")
+
+no_shrink | shrink | llo
+```
+
+#### Distorted (shrunken rows)
+
+```{r, fig.width = 8.5, fig.height = 3}
+shrink_distorted = scale_data_shrink %>%
+  draw_scale_distorted() +
+  ggtitle("Shrinkage")
+
+llo_distorted = scale_data_llo %>%
+  draw_scale_distorted() +
+  ggtitle("LLO")
+
+no_shrink | shrink_distorted | llo_distorted
+```
+
+#### With more error
+
+```{r fig.width = 6, fig.height = 3}
+llo_distorted_large = polls %$%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(se), 30, llo_adjustment, factor = llo_factor) %>%
+  draw_scale_distorted() +
+  ggtitle("LLO, large max SE")
+
+llo_distorted | llo_distorted_large
+```
+
 
 
 ## Appendix: verifying the math
