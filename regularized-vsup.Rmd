@@ -162,17 +162,19 @@ shrinkage_adjustment = function(lead, se, prior_var) {
   lead / (1 + se^2 / prior_var)
 }
 
-build_scale = function(min_lead, max_lead, min_se, max_se, adjust, ...) {
+build_scale = function(min_lead, max_lead, min_se, max_se, adjust, ..., uncertainty_var = se) {
+  uv = ensym(uncertainty_var)
+  
   crossing(
     lead = seq(min_lead, max_lead, length.out = 5),
-    se = seq(min_se, max_se, length.out = 5)
+    !!uv := seq(min_se, max_se, length.out = 5)
   ) %>%
   group_by(lead) %>%
   mutate(
-    prev_se = lag(se),
-    se_mid = (prev_se + se)/2
+    prev_se = lag(!!uv),
+    se_mid = (prev_se + !!uv)/2
   ) %>%
-  group_by(se) %>%
+  group_by(!!uv) %>%
   mutate(
     prev_lead = lag(lead), 
     lead_mid = (lead + prev_lead)/2,
@@ -190,12 +192,14 @@ scale_data = polls %$%
 Then compare the two versions. First, we'll color each cell by the value of `lead` at its midpoint (left plot) then by the adjusted (shrunken / regularized) value at its midpoint (right plot):
 
 ```{r fig.width = 6, fig.height = 3}
-draw_scale = function(scale_data, color_by = "lead_mid") {
+draw_scale = function(scale_data, color_by = "lead_mid", uncertainty_var = se) {
+  uv = ensym(uncertainty_var)
+
   scale_data %>%
     mutate(lead_mid = !!sym(color_by)) %>%
     ggplot(aes(
       xmin = prev_lead, xmax = lead, 
-      ymin = prev_se, ymax = se, alpha = -se_mid, fill = lead_mid
+      ymin = prev_se, ymax = !!uv, alpha = -se_mid, fill = lead_mid
     )) + 
     geom_rect() +
     scale_y_reverse() +
@@ -207,7 +211,7 @@ draw_scale = function(scale_data, color_by = "lead_mid") {
     scale_x_continuous(position = "top", limits = c(-40, 40)) +
     scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
     theme(panel.grid = element_blank()) +
-    ylab("se") +
+    ylab(paste0("uncertainty (", as.character(uv), ")")) +
     xlab("lead")
 }
 
@@ -430,7 +434,7 @@ $$
 
 ```{r, fig.width = 6, fig.height = 5}
 a = 0
-b = 2
+b = 1.5
 
 data_frame(
   p_actual = seq(.001, .999, length.out = 101),
@@ -605,9 +609,80 @@ llo_distorted_large = polls %$%
 llo_distorted | llo_distorted_large
 ```
 
+## Addendum 4: linear in log-odds model, uncertainty as P(loss)
+
+One issue with the above linear-in-log-odds approach might be the use of `se` for the uncertainty: it might make more sense to quantify the uncertainty in this model as $P(Clinton~loses)$, or more precisely, $.5 - |P(Clinton~loses) - .5|$, i.e., the probability that whoever is not in the lead wins.
+
+```{r}
+polls %<>% mutate(
+  p_underdog_wins = .5 - abs(p_perceived - .5)
+)
+```
 
 
-## Appendix: verifying the math
+```{r, fig.width = 10, fig.height = 2}
+polls %>%
+  ggplot(aes(y = p_underdog_wins, yend = p_underdog_wins, xend = lead, x = lead_adj_llo)) +
+  geom_segment(size = 0.75, color = "red") +
+  geom_point(size = 1.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  annotate(
+    "text", x = 31, y = -.14, label = "adjustment", color = "red", 
+    hjust = 0, fontface = "bold"
+  ) +
+  scale_y_reverse() +
+  ylab(NULL)
+```
+
+## Palettes 
+
+```{r}
+llo_u_adjustment = function(lead, P_underdog_wins, factor = 1) {
+  # This function is a more numerically stable implementation of:
+  #   p_perceived = pnorm(0, lead, se)
+  #   p_displayed = invlogit((logit(p_perceived) - a) / b)
+  #   -qnorm(p_displayed, 0, se)
+  logit_p_perceived = logit(P_underdog_wins)
+  logit_p_perceived = pnorm(0, lead, se, log.p = TRUE) - pnorm(0, lead, se, log.p = TRUE, lower.tail = FALSE)
+  logit_p_displayed = (logit_p_perceived - a) / b
+  lead_adj = ifelse(logit_p_displayed > 0,
+    qnorm(invlogit(-logit_p_displayed), 0, se),
+    -qnorm(invlogit(logit_p_displayed), 0, se)
+  )
+  lead_adj * factor
+}
+
+```
+
+
+```{r}
+scale_data_llo_u = polls %$%
+  build_scale(-max(abs(lead)), max(abs(lead)), min(p_underdog_wins), max(p_underdog_wins), llo_adjustment, factor = llo_factor, uncertainty_var = p_underdog_wins)
+
+no_shrink = scale_data_shrink %>%
+  draw_scale(color_by = "lead_mid") +
+  ggtitle("No shrinkage")
+
+shrink = scale_data_shrink %>%
+  draw_scale(color_by = "lead_mid_adj") +
+  ggtitle("Shrinkage")
+
+llo = scale_data_llo %>%
+  draw_scale(color_by = "lead_mid_adj") +
+  ggtitle("LLO")
+
+llo_u = scale_data_llo_u %>%
+  draw_scale(color_by = "lead_mid_adj", uncertainty_var = p_underdog_wins) +
+  ggtitle("LLO (U)")
+
+llo_u
+
+no_shrink | shrink | llo
+
+```
+
+
+## Appendix: verifying the math (for regularized version)
 
 Just to make sure I didn't screw up some aspect of the math in the analytical version of the model above, here is basically the same model fit using MCMC:
 
