@@ -1,5 +1,5 @@
 ---
-title: "Regularized VSUPs"
+title: "Shrinkage VSUPs"
 output: 
   html_document:
     toc: true
@@ -8,7 +8,6 @@ output:
     self_contained: true
 ---
 
-_Matthew Kay <mjskay@umich.edu>_
 
 ## Introduction
 
@@ -77,6 +76,41 @@ polls = read_csv("examples/polling.csv",
 
 ## Regularizing the estimates
 
+\newcommand{\llo}{\mathrm{llo}} 
+\newcommand{\invllo}{\mathrm{llo}^{-1}} 
+
+\newcommand{\logit}{\mathrm{logit}} 
+\newcommand{\invlogit}{\mathrm{logit}^{-1}} 
+
+\newcommand{\lpo}{\mathrm{lpr}} 
+\newcommand{\invlpo}{\mathrm{lpr}^{-1}}
+
+\newcommand{\P}{\mathbb{P}}
+
+\newcommand{\normalcdf}{\mathrm{F}_\mathrm{Normal}}
+\newcommand{\normalinvcdf}{\mathrm{F}_\mathrm{Normal}^{-1}}
+
+\newcommand{\stdnormalcdf}{\Phi}
+\newcommand{\stdnormalinvcdf}{\Phi^{-1}}
+
+\newcommand{\normal}{\mathrm{Normal}}
+
+\newcommand{\Xlpo}{X^{*-}_\mathrm{lp}}
+\newcommand{\mulpo}{\mu^*_\mathrm{lp}}
+\newcommand{\sigmalpo}{\sigma^*_\mathrm{lp}}
+
+\newcommand{\obsmu}{\mu}
+\newcommand{\se}{\sigma}
+
+\newcommand{\priorsigma}{\sigma_0}
+
+\newcommand{\postmu}{\mu'}
+\newcommand{\postsigma}{\sigma'}
+\newcommand{\postsigmasq}{\sigma'{}^2}
+
+\newcommand{\priormean}{\theta}
+\newcommand{\priorsd}{\tau}
+
 We'll make a few assumptions:
 
 1. `Margin of error` in the table is the standard error
@@ -90,11 +124,42 @@ prior_var = mean(polls$lead ^ 2)
 
 Thus our prior is _N_(0, `prior_var`) = _N_(0, `r prior_var`). I chose 0-centered here (rather than centered on the actual mean, which is `r mean(polls$lead)`, because of some half-remembered argument from Michael that 0-centered is more neutral in polling data. You could equally as well do everything that follows from here by shrinking towards sample mean instead of assuming a mean of 0. The variance would change a bit, as would the calculation of the adjusted mean.
 
-We will regularize by adjusting each mean `lead` to be the posterior mean from a Gaussian model if we had used _N_(0, `r prior_var`) as the prior on the mean. That is, if the sample mean is $\bar{x}$ (here, `lead`), the margin of error is $\sigma_\bar{x}$ (here, `se`), and the variance of the prior is $\sigma_0^2$ (here `prior_var`), then the posterior mean $\mu_n$ is (based on [this](https://www.cs.ubc.ca/~murphyk/Papers/bayesGauss.pdf) plus some re-arranging and substitution):
+We will regularize by adjusting each mean `lead` to be the posterior mean from a Gaussian model if we had used _N_(0, `r prior_var`) as the prior on the mean. That is, we have observed a particular value of the `lead`, and we will quantify our uncertainty in that observation using a random variable, $X$:
 
 $$
-\mu_n = \frac{\bar{x}}{1 + \frac{\sigma_\bar{x}^2}{\sigma_0^2}}
+X \sim \normal(\obsmu,\se)
 $$
+This is a measurement error model: we don't observe *exactly* $\obsmu$, we observe it with error $\se$. Under this model, the variance of the prior is $\priorsd^2$ (here `prior_var`), then the posterior mean, $\postmu$ is:
+
+$$
+\begin{align*}
+
+\postmu &= \frac{\frac{1}{\priorsd^2} \priormean + \frac{1}{\se^2} \obsmu}{\frac{1}{\priorsd^2} + \frac{1}{\se^2}} \\
+&= \frac{ \frac{1}{\se^2} \left( \frac{\se^2}{\priorsd^2} \priormean + \obsmu \right) }
+{\frac{1}{\se^2} \left( \frac{\se^2}{\priorsd^2}  + 1 \right)} \\
+&= \frac{ \obsmu + \frac{\se^2}{\priorsd^2} \priormean  }{ 1 + \frac{\se^2}{\priorsd^2} } \\
+
+\end{align*}
+$$
+
+In the case where our prior has $\priomean = 0$, this simplifies to:
+
+$$
+\postmu = \frac{\obsmu}{1 + \frac{\se^2}{\priorsd^2}}
+$$
+
+And the posterior variance is:
+
+$$
+\overset{*}\sigma = \sqrt{\frac{1}{\frac{1}{\priorsd^2} + \frac{1}{\sigma^2}}}
+$$
+
+And $X'$, which we will take as the regularized version of $X$, is:
+
+$$
+X' \sim \normal(\postmu, \postsigma)
+$$
+
 
 Thus:
 
@@ -417,9 +482,9 @@ The results are identical:
 
 ```{r}
 polls %>%
-  add_fitted_samples(m) %>%
+  add_fitted_draws(m) %>%
   mean_qi() %>%
-  ggplot(aes(x = lead_adj, y = estimate)) +
+  ggplot(aes(x = lead_adj, y = .value)) +
   geom_point() +
   geom_abline(slope = 1, intercept = 0) +
   xlab("Adjusted lead from analytical method (Empirical Bayes)") +

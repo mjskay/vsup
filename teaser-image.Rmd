@@ -1,0 +1,336 @@
+---
+title: "Teaser image generation for statistical / perceptual VSUPs"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    fig_caption: false
+    self_contained: true
+---
+
+This document builds up the main teaser figure for the paper.
+
+```{r setup, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(tidybayes)
+library(ggstance)
+library(patchwork)
+library(tidyr)
+library(ggstance)
+library(cowplot)
+theme_set(theme_tidybayes())
+```
+
+## Build up the suppression function...
+
+```{r fig.width = 7.5, fig.height = 3.25}
+make_all_palette_data = function(
+    prior_var = 284.8,
+    lpr_alpha = .7,
+    mus = c(-40, -30, -20, -10, 0, 10, 20, 30) + 5,
+    ses = c(0, 10, 20, 30),
+    make_tree_data = TRUE
+  ) {
+  
+  palette_data = 
+    crossing(
+      nesting(mu_index = 1:length(mus), mu = mus),
+      nesting(se_index = 1:length(ses), se = ses)
+    ) %>%
+    mutate(
+      original_mu = mu,
+      mu_star = mu / (1 + se^2 / prior_var),
+      mu_per = case_when(
+        mu < 0 ~ pmin(mu + lpr_alpha * se, 0),
+        mu > 0 ~ pmax(mu - lpr_alpha * se, 0)
+      ),
+      mu_tree = if (make_tree_data) case_when(
+        se_index == 1 ~ mu,
+        se_index == 2 & mu_index %in% c(1,2) ~ mean(mus[c(1,2)]),
+        se_index == 2 & mu_index %in% c(3,4) ~ mean(mus[c(3,4)]),
+        se_index == 2 & mu_index %in% c(5,6) ~ mean(mus[c(5,6)]),
+        se_index == 2 & mu_index %in% c(7,8) ~ mean(mus[c(7,8)]),
+        se_index == 3 & mu_index %in% 1:4 ~ mean(mus[1:4]),
+        se_index == 3 & mu_index %in% 5:8 ~ mean(mus[5:8]),
+        se_index == 4 ~ mean(mus)
+      ) else NA
+    ) %>%
+    transmute(
+      original_mu,
+      se,
+      `Traditional bivariate` = mu,
+      `Tree VSUP` = mu_tree,
+      `Shrinkage VSUP` = mu_star,
+      `Perceptual VSUP` = mu_per
+    ) %>%
+    gather(type, value, -se, -original_mu) %>%
+    mutate(
+      type = fct_relevel(type, 
+        "Traditional bivariate",
+        "Tree VSUP",
+        "Shrinkage VSUP",
+        "Perceptual VSUP"
+      )
+    )
+}
+
+palette_data_coarse = make_all_palette_data()
+palette_data_fine = make_all_palette_data(
+    make_tree_data = FALSE,
+    ses = seq(0, 30, length.out = 101)
+  )
+
+lines_comparison = palette_data_coarse %>%
+  ggplot(aes(x = value, y = se)) +
+  geom_path(aes(color = value, group = original_mu), size = 1, 
+    data = . %>% filter(type == "Tree VSUP")) +
+  geom_path(aes(color = value, group = original_mu), size = 1, 
+    data = palette_data_fine) +
+  geom_point() +
+  scale_y_reverse() +
+  scale_x_continuous(breaks = c(-20, 0, 20), limits = c(-40, 40)) +
+  facet_grid(. ~ type) +
+  scale_color_viridis_c(name = "Original value") +
+  # scale_color_gradient2(
+  #   low = rgb(166, 28, 58, max = 255), 
+  #   mid = "gray75",
+  #   high = rgb(57, 93, 159, max = 255),
+  #   name = "Original value"
+  # ) +
+  ylab("Uncertainty (standard error)") +
+  xlab("Suppressed value") +
+  theme_tidybayes() +
+  theme(legend.position = "bottom") +
+  coord_cartesian(expand = FALSE) +
+  expand_limits(y = c(-1.5, 31.5)) +
+  panel_border()
+
+lines_comparison
+```
+
+```{r eval = FALSE}
+ggsave("figures/palette-lines.pdf", useDingbats = FALSE, width = 7.5, height = 3.25)
+```
+
+## ...and the palettes
+
+```{r fig.width = 7.5, fig.height = 2.5}
+palette_comparison = palette_data_coarse %>%
+  ggplot(aes(x = original_mu, y = se, fill = value, alpha = -se)) +
+  geom_raster() +
+  facet_grid(. ~ type) +
+  scale_y_reverse() +
+  scale_x_continuous(breaks = c(-20, 0, 20), limits = c(-40, 40)) +
+  scale_fill_viridis_c(name = "Original value", guide = FALSE) +
+  # scale_fill_gradient(
+  #   low = rgb(166, 28, 58, max = 255), 
+  #   high = rgb(57, 93, 159, max = 255),
+  #   name = "Original value", guide = FALSE
+  # ) +
+  scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
+  theme_tidybayes() +
+  coord_cartesian(expand = FALSE)
+
+palette_comparison
+```
+
+
+```{r fig.width = 2.75, fig.height = 3.25}
+make_prob_palette_data = function(
+    lpr_alpha = .5,
+    mus = c(-40, -30, -20, -10, 0, 10, 20, 30) + 5,
+    ps = seq(0.5, 0, length.out = 4)
+  ) {
+  
+  palette_data = 
+    crossing(
+      nesting(mu_index = 1:length(mus), mu = mus),
+      nesting(p_index = 1:length(ps), p = ps)
+    ) %>%
+    mutate(
+      original_mu = mu,
+      se = abs(- mu / qnorm(p)),
+      mu_per = case_when(
+        mu < 0 ~ pmin(mu + lpr_alpha * se, 0),
+        mu > 0 ~ pmax(mu - lpr_alpha * se, 0)
+      )
+    ) %>%
+    mutate(
+      type = "Perceptual VSUP",
+      value = mu_per
+    )
+}
+
+prob_palette_data_coarse = make_prob_palette_data()
+prob_palette_data_fine = make_prob_palette_data(ps = seq(0.5, 0, length.out = 101))
+
+prob_lines_comparison = prob_palette_data_coarse %>%
+  ggplot(aes(x = value, y = p)) +
+  geom_path(aes(color = value, group = original_mu), size = 1, data = prob_palette_data_fine) +
+  geom_point() +
+  scale_y_reverse(breaks = seq(0.5, 0, length.out = 4), labels = scales::percent) +
+  facet_grid(. ~ type) +
+  scale_color_viridis_c(name = "Original value") +
+  # scale_color_gradient2(
+  #   low = rgb(166, 28, 58, max = 255), 
+  #   mid = "gray75",
+  #   high = rgb(57, 93, 159, max = 255),
+  #   name = "Original value"
+  # ) +
+  ylab("Uncertainty (P(opponent wins))") +
+  xlab("Suppressed value") +
+  theme_tidybayes() +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = c(-20, 0, 20), limits = c(-40, 40)) +
+  coord_cartesian(expand = FALSE) +
+  expand_limits(y = c(-.02, .52)) +
+  panel_border()
+
+prob_lines_comparison
+```
+
+```{r, fig.width = 2.75, fig.height = 2.5}
+prob_palette_comparison = prob_palette_data_coarse %>%
+  ggplot(aes(x = original_mu, y = p, fill = value, alpha = -p)) +
+  geom_raster() +
+  facet_grid(. ~ type) +
+  scale_y_reverse(breaks = seq(0.5, 0, length.out = 4), labels = scales::percent) +
+  scale_x_continuous(breaks = c(-20, 0, 20)) +
+  scale_fill_viridis_c(name = "Original value", guide = FALSE) +
+  # scale_fill_gradient(
+  #   low = rgb(166, 28, 58, max = 255), 
+  #   high = rgb(57, 93, 159, max = 255),
+  #   name = "Original value", guide = FALSE
+  # ) +
+  scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
+  theme_tidybayes() +
+  coord_cartesian(expand = FALSE)
+
+prob_palette_comparison
+
+```
+
+## Altogether
+
+```{r, fig.width = 10, fig.height = 4.75}
+plot_grid(nrow = 2, ncol = 2, rel_widths = c(3.1,1), align = "hv", axis = "trbl",
+  lines_comparison + guides(color = FALSE), prob_lines_comparison + guides(color = FALSE),
+  palette_comparison, prob_palette_comparison
+)
+```
+
+
+```{r, eval = FALSE}
+ggsave("figures/palette-comparison.pdf", useDingbats = FALSE, width = 10, height = 4.75)
+```
+
+
+## Palette test on polling data
+
+Let's do it again, but to get example palettes using the election data. That data is:
+
+```{r}
+polls = read_csv("examples/polling.csv",
+  col_types = cols(
+    State = col_character(),
+    Date = col_character(),
+    `Hillary Clinton` = col_number(),
+    `Donald Trump` = col_number(),
+    `Gary Johnson` = col_number(),
+    `Jill Stein` = col_number(),
+    `Evan McMullin` = col_number(),
+    `Margin of error` = col_number(),
+    Lead = col_number(),
+    `Clinton potential EVs` = col_number(),
+    `Trump potential EVs` = col_number(),
+    `Tied potential EVs` = col_number(),
+    Result = col_double()
+  ),
+  na = c("", "Tied")
+) %>%
+  mutate(
+    #need to recalculate this as it is not signed in the data
+    lead = `Hillary Clinton` - `Donald Trump`,
+    se = `Margin of error`
+  )
+```
+
+With this range of SE and leads:
+
+```{r}
+range(polls$se)
+```
+
+```{r}
+range(polls$lead)
+```
+
+So let's construct some palettes:
+
+```{r fig.width = 5.6, fig.height = 2.5}
+palette_data_coarse_polls = make_all_palette_data(
+    ses = seq(0, 5.5, length.out = 4)
+  ) %>%
+  filter(type != "Traditional bivariate")
+
+palette_data_fine_polls = make_all_palette_data(
+    make_tree_data = FALSE,
+    ses = seq(0, 5.5, length.out = 101)
+  ) %>%
+  filter(type != "Traditional bivariate")
+
+lines_comparison_polls = palette_data_coarse_polls %>%
+  ggplot(aes(x = value, y = se)) +
+  geom_path(aes(color = value, group = original_mu), size = 1, 
+    data = . %>% filter(type == "Tree VSUP")) +
+  geom_path(aes(color = value, group = original_mu), size = 1, 
+    data = palette_data_fine_polls %>% filter(type != "Tree VSUP")) +
+  geom_point() +
+  scale_y_reverse() +
+  scale_x_continuous(breaks = c(-20, 0, 20), limits = c(-40, 40)) +
+  facet_grid(. ~ type) +
+  scale_color_gradient(
+    low = rgb(166, 28, 58, max = 255), high = rgb(57, 93, 159, max = 255),
+    guide = FALSE
+  ) +
+  ylab("Uncertainty (standard error)") +
+  xlab("Suppressed value") +
+  theme_tidybayes() +
+  theme(legend.position = "bottom") +
+  coord_cartesian(expand = FALSE) +
+  expand_limits(y = c(-0.5, 6)) +
+  panel_border()
+
+lines_comparison_polls
+```
+
+
+```{r fig.width = 5.6, fig.height = 2.5}
+palette_comparison_polls = palette_data_coarse_polls %>%
+  ggplot(aes(x = original_mu, y = se, fill = value, alpha = -se)) +
+  geom_raster() +
+  facet_grid(. ~ type) +
+  scale_y_reverse() +
+  scale_x_continuous(breaks = c(-20, 0, 20), limits = c(-40, 40)) +
+  scale_fill_gradient(
+    low = rgb(166, 28, 58, max = 255), high = rgb(57, 93, 159, max = 255),
+    guide = FALSE
+  ) +
+  scale_alpha_continuous(guide = FALSE, range = c(0.25,1)) +
+  theme_tidybayes() +
+  coord_cartesian(expand = FALSE)
+
+palette_comparison_polls
+```
+
+```{r, fig.width = 5.6, fig.height = 4.75}
+plot_grid(nrow = 2, align = "hv", axis = "trbl",
+  lines_comparison_polls,
+  palette_comparison_polls
+)
+```
+
+```{r, eval = FALSE}
+ggsave("figures/polling-palettes.pdf", useDingbats = FALSE, width = 5.6, height = 4.75)
+```

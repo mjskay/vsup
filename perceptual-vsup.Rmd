@@ -1,0 +1,295 @@
+---
+title: "Perceptual VSUPs"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    self_contained: true
+    fig_caption: false    
+---
+
+## Setup
+
+```{r setup, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(rstan)
+library(brms)
+library(tidybayes)
+library(ggstance)
+library(modelr)
+library(patchwork)
+library(tidyr)
+library(ggstance)
+library(cowplot)
+
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+theme_set(theme_tidybayes())
+```
+
+### Load data
+
+Load the polling data...
+
+```{r}
+polls = read_csv("examples/polling.csv",
+  col_types = cols(
+    State = col_character(),
+    Date = col_character(),
+    `Hillary Clinton` = col_number(),
+    `Donald Trump` = col_number(),
+    `Gary Johnson` = col_number(),
+    `Jill Stein` = col_number(),
+    `Evan McMullin` = col_number(),
+    `Margin of error` = col_number(),
+    Lead = col_number(),
+    `Clinton potential EVs` = col_number(),
+    `Trump potential EVs` = col_number(),
+    `Tied potential EVs` = col_number(),
+    Result = col_double()
+  ),
+  na = c("", "Tied")
+) %>%
+  mutate(
+    #need to recalculate this as it is not signed in the data
+    lead = `Hillary Clinton` - `Donald Trump`,
+    se = `Margin of error`
+  )
+```
+
+
+Let's consider uncertainty in an outcome: What is the probaility of some particular outcome?
+
+We will assume that we are using probability to quantify uncertainty (e.g., a probability distribution describes our uncertainty in some number), and we'll consider a perceptual approach to adjust the uncertainty based on the linear-in-log-odds model of human perception of probabilities (modified slightly for mathematical convenience: a linear-in-probit model).
+
+Let's grid over some possible means and uncertainties (where uncertainty here is precision):
+
+```{r}
+mean_variance_grid = crossing(
+    mu = c(.25, .35, .45, .55, .65, .75),
+    sigma = exp(seq(log(0.02), log(0.06), length.out = 4))
+  ) %>%
+  mutate(
+    lower = qnorm(.05, mu, sigma),
+    upper = qnorm(.95, mu, sigma),
+    x = list(ppoints(100)),
+    d = pmap(list(x, mu, sigma), dnorm),
+    d = map(d, ~ .x / max(.x)),
+    variance = ordered(sigma, labels = c("lowest", "low", "high", "highest"))
+  )
+
+mean_variance_grid
+```
+
+We can see what this grid implies about the distributions describing our means and uncertainties by plotting them:
+
+```{r, fig.width = 9, fig.height = 2.75}
+x_breaks = seq(0, 1, by = 1/4)
+
+mean_variance_grid %>%
+  ggplot(aes(x = mu, y = 0, xmin = lower, xmax = upper)) +
+  geom_ribbon(aes(x = x, ymin = 0, ymax = d), fill = "lightblue", data = unnest) +
+  geom_pointrangeh() +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "gray65") +
+  facet_grid(variance ~ mu, switch = "y") +
+
+  scale_y_continuous(breaks = NULL) +
+  scale_x_continuous(breaks = x_breaks, labels = x_breaks) +
+  ylab("variance") +
+  xlab(NULL) +
+  panel_border() +
+  ggtitle(NULL, subtitle = "mean") +
+  theme(
+    plot.subtitle = element_text(hjust = 0.5),
+    panel.spacing = unit(0, "points")
+  ) 
+```
+
+Our goal will be to apply a correction by stuffing these distributions through a model of human probability perception.
+
+## Linear-in-probit model
+
+The linear-in-probit model looks like this:
+
+```{r}
+lp = function(p, alpha = llo_intercept, beta = llo_slope) {
+  pnorm(qnorm(p) * beta + alpha)
+}
+inv_lp = function(p, alpha = llo_intercept, beta = llo_slope) {
+  pnorm((qnorm(p) - llo_intercept) / llo_slope)
+}
+```
+
+```{r, fig.width = 2.75, fig.height = 2.5}
+lp_in_prob_space = tibble(
+  alpha = c(.2, 0,   0,  0,  0,     0,    0,    0),
+  beta  = c(.2, .4, .4, .6, .8,  1/.8, 1/.6, 1/.4),
+  curve = interaction(alpha, beta),
+  true_p = list(seq(0, 1, length.out = 300))
+) %>%
+  unnest(true_p) %>%
+  mutate(perceived_p = lp(true_p, alpha, beta)) %>%
+  ggplot(aes(x = true_p, y = perceived_p, group = curve)) +
+  geom_hline(yintercept = .5, linetype = "dashed", color = "gray75") +
+  geom_vline(xintercept = .5, linetype = "dashed", color = "gray75") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray75") +
+  geom_line(color = "gray75", size = 1, data = . %>% filter(alpha == 0)) +
+  geom_line(color = "red", size = 1, data = . %>% filter(alpha != 0)) +
+  coord_cartesian(expand = FALSE, clip = "off") +
+  scale_x_continuous(limits = c(0,1), labels = scales::percent) +
+  scale_y_continuous(limits = c(0,1), labels = scales::percent) +
+  xlab("true probability") +
+  ylab("perceived probability")  +
+  theme_tidybayes() +
+  panel_border()
+
+lp_in_prob_space
+```
+
+And in probit-probit space:
+
+```{r, fig.width = 2.5, fig.height = 2.5}
+lp_in_probit_space = tibble(
+  alpha = c(.2, 0,   0,  0,  0,     0,    0,    0),
+  beta  = c(.2, .4, .4, .6, .8,  1/.8, 1/.6, 1/.4),
+  curve = interaction(alpha, beta),
+) %>%
+  ggplot(aes(x = qnorm(true_p), y = qnorm(perceived_p), group = curve)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray75") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray75") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray75") +
+  geom_abline(aes(intercept = alpha, slope = beta), 
+    color = "gray75", size = 1, data = . %>% filter(alpha == 0)) +
+  geom_abline(aes(intercept = alpha, slope = beta), 
+    color = "red", size = 1, data = . %>% filter(alpha != 0)) +
+  coord_cartesian(expand = FALSE) +
+  xlim(-2.25, 2.25) +
+  ylim(-2.25, 2.25) +
+  xlab("probit(true probability)") +
+  ylab("probit(perceived probability)")  +
+  theme_tidybayes() +
+  panel_border()
+
+lp_in_probit_space
+```
+
+Altogether:
+
+```{r, fig.width = 5.25, fig.height = 2.5}
+plot_grid(ncol = 2, rel_widths = c(1.05,1),
+  lp_in_prob_space,
+  lp_in_probit_space
+)
+```
+
+```{r eval = FALSE}
+ggsave("figures/linear-in-probit.pdf", width = 5.25, height = 2.5)
+```
+
+
+## Linear in probit correction derivation
+
+\newcommand{\llo}{\mathrm{llo}} 
+\newcommand{\invllo}{\mathrm{llo}^{-1}} 
+
+\newcommand{\logit}{\mathrm{logit}} 
+\newcommand{\invlogit}{\mathrm{logit}^{-1}} 
+
+\newcommand{\lpo}{\mathrm{lpr}} 
+\newcommand{\invlpo}{\mathrm{lpr}^{-1}}
+
+\newcommand{\p}{\mathbb{P}}
+
+\newcommand{\normalcdf}{\mathrm{F}_\mathrm{Normal}}
+\newcommand{\normalinvcdf}{\mathrm{F}_\mathrm{Normal}^{-1}}
+
+\newcommand{\stdnormalcdf}{\Phi}
+\newcommand{\stdnormalinvcdf}{\Phi^{-1}}
+
+\newcommand{\normal}{\mathrm{Normal}}
+
+\newcommand{\Xlpo}{\overset{<}{X}}
+\newcommand{\mulpo}{\overset{<}{\mu}}
+\newcommand{\sigmalpo}{\overset{<}{\sigma}}
+\newcommand{\sigmalposq}{{\overset{<}{\sigma}}\!\;{}^2}
+
+\newcommand{\XlpoPos}{\overset{>}{X}}
+\newcommand{\mulpoPos}{\overset{>}{\mu}}
+\newcommand{\sigmalpoPos}{\overset{>}{\sigma}}
+\newcommand{\sigmalposqPos}{{\overset{>}{\sigma}}\!\;{}^2}
+
+\newcommand{\obsmu}{\mu}
+\newcommand{\se}{\sigma}
+
+\newcommand{\priorsigma}{\sigma_0}
+
+\newcommand{\postmu}{\mu'}
+\newcommand{\postsigma}{\sigma'}
+
+Deriving a linear-in-probit perceptual correction by stuffing a Normal CDF through the linear-in-probit function (also the LLO <-> LPO conversion as a bonus):
+
+$$
+\begin{align*}
+&& \logit(p) &= \frac{p}{1-p} \\ 
+\\
+&& \llo(p) &= \invlogit(\alpha' + \beta' \cdot \logit(p)) \\
+&& \invllo(p) &= \invlogit\left(\frac{\logit(p) - \alpha'}{\beta'} \right) \\
+\\
+&& \lpo(p) &= \stdnormalcdf\left(\alpha + \beta \cdot \stdnormalinvcdf(p) \right) \\
+&& \invlpo(p) &= \stdnormalcdf\left(\frac{\stdnormalinvcdf(p) - \alpha}{\beta} \right) \\
+\\
+&& \logit(p) &\approx \stdnormalinvcdf(p) \cdot 1.6  &\textrm{(Amemiya, 1981)} \\ 
+\implies && \llo(p) &\approx \stdnormalcdf\left(\frac{\alpha' + \beta' \cdot \stdnormalinvcdf(p)\cdot 1.6}{1.6}\right) \\
+&&  &= \stdnormalcdf\left(\frac{\alpha'}{1.6} + \beta' \cdot \stdnormalinvcdf(p)\right) \\
+\implies && \alpha &\approx \frac{\alpha'}{1.6} \\
+&& \beta &\approx \beta' \\
+\\
+&& X &\sim \normal(\mu, \sigma)\\
+\implies && \p(X \le x) &= \normalcdf\big(x|\mu,\sigma\big) \\
+&& &= \stdnormalcdf\Big(\frac{x - \mu}{\sigma}\Big) \\
+\\
+&& {\p(\Xlpo \le x)} &= \invlpo\left({\p(X \le x)}\right) \\
+&& &= \invlpo\left(\stdnormalcdf\left(\frac{x - \mu}{\sigma}\right)\right) \\
+&& &= \stdnormalcdf\left(\frac{\frac{x - \mu}{\sigma} - \alpha}{\beta}\right) \\
+&& &= \stdnormalcdf\Big(\frac{x - \mu - \sigma\alpha}{\sigma\beta}\Big) \\
+&& &= \normalcdf\big(x | \mu + \sigma\alpha, \sigma\beta \big) \\
+\\
+\implies && \Xlpo &\sim \normal\left(\mulpo, \sigmalposq \right)\\
+&& \mulpo &= \mu + \sigma\alpha \\
+&& \sigmalpo &= \sigma\beta
+\end{align*}
+$$
+
+And for right-tailed probabilities:
+
+$$
+\begin{align*}
+&& {\p(\XlpoPos \ge x)} &= \invlpo\left({\p(X \ge x)}\right) \\
+&& \p(-\XlpoPos \le -x) &= \invlpo\left(\p(-X \le -x)\right) \\
+&& &= \invlpo\left(\stdnormalcdf\left(\frac{-x + \mu}{\sigma}\right)\right) \\
+&& &= \stdnormalcdf\left(\frac{\frac{-x + \mu}{\sigma} - \alpha}{\beta}\right) \\
+&& &= \stdnormalcdf\Big(\frac{-x + \mu - \sigma\alpha}{\sigma\beta}\Big) \\
+&& &= \normalcdf\big(-x | -\mu + \sigma\alpha, \sigma\beta \big) \\
+\\
+\implies && -\XlpoPos &\sim \normal\left(-\mulpoPos, \sigmalposqPos\right)\\
+&& \mulpoPos &= \mu - \sigma\alpha \\
+&& \sigmalpoPos &= \sigma\beta \\
+\implies && \XlpoPos &\sim \normal\left(\mulpoPos, \sigmalposqPos\right)\\
+\end{align*}
+$$
+
+I also thought about keeping sigma fixed and only using a fixed reference point (instead of all points) to do the CDF translation, but it ends up being senseless since it results in a linear scaling all $\mu$ by $\beta$ which would then immediately be undone by any mapping to a color scale. Might be useful for non-color-palette applications though:
+
+$$
+\begin{align*}
+&& \p(X^* \le 0) &= \invlpo\big(\p(X \le 0)\big) &\textrm{where }\sigma^*=\sigma\\
+&& &= \invlpo\Big(\normalcdf\Big(\frac{-\mu}{\sigma}\Big)\Big) \\
+&& &= \normalcdf\left(\frac{\frac{-\mu}{\sigma} - \alpha}{\beta}\right) \\
+&& &= \normalcdf\left(\frac{-\frac{\mu + \sigma\alpha}{\beta}}{\sigma}\right) \\
+&& \normalcdf\big(0 | \mu^*, \sigma) &= \normalcdf\left(0 \middle| \frac{\mu + \sigma\alpha}{\beta}, \sigma \right) \\
+\\
+\implies && X^* &\sim \normal(\mu^*, \sigma)\\
+&& \mu^* &= \frac{\mu + \sigma\alpha}{\beta} 
+\end{align*}
+$$
